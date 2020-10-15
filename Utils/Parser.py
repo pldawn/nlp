@@ -53,11 +53,11 @@ class MonetaryPolicyReportAnalyzer:
         self.indices = OrderedDict()
         self.index_to_page = OrderedDict()
         self.mean_height = 0
+        self.most_x0 = 0
 
-    def get_mean_height(self, parse_result):
+    def get_mean_height(self, pages_dict):
         contents = []
-
-        for value in parse_result.values():
+        for value in pages_dict.values():
             contents += value
 
         heights = [item[1] for item in contents]
@@ -65,10 +65,29 @@ class MonetaryPolicyReportAnalyzer:
 
         return mean_height
 
+    def get_most_x0(self, pages_dict):
+        contents = []
+        for value in pages_dict.values():
+            contents += value
+
+        x0s = [item[0] for item in contents]
+        freq_dict = {}
+
+        for x0 in x0s:
+            freq_dict[x0] = freq_dict.setdefault(x0, 0) + 1
+
+        x0s = [(k ,v) for k,v in freq_dict.items()]
+        x0s.sort(key=lambda x: x[1])
+
+        most_x0 = x0s[-1][0]
+
+        return most_x0
+
     def analyze(self, parse_result):
         self.pages = self.divide_to_pages(parse_result)
         self.mean_height = self.get_mean_height(self.pages)
         self.pages = self.delete_non_text_part(self.pages)
+        self.most_x0 = self.get_most_x0(self.pages)
 
         return self.pages
 
@@ -148,6 +167,9 @@ class MonetaryPolicyReportAnalyzer:
                 if in_table:
                     if re.match('.*?数据来源：[^。]+?。', content):
                         match_table_ending = True
+                        tables.append(ind)
+                        continue
+
                     if match_table_ending and height > self.mean_height:
                         in_table = False
                     else:
@@ -165,9 +187,12 @@ class MonetaryPolicyReportAnalyzer:
 
         return pages_dict
 
+    def merge_continuous_paragraph(self, pages_dict):
+        pass
+
 
 def main():
-    pdf_input_path = "/Users/zhangwentao/PycharmProjects/nlp/Resources/2020Q2.pdf"
+    pdf_input_path = "../Resources/2020Q2.pdf"
     agent = PDFParser()
     result = agent.parse(pdf_input_path)
 
