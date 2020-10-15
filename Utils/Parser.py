@@ -12,6 +12,7 @@ class PDFParser:
         self.__params_manager = LAParams()
         self.__aggregator = PDFPageAggregator(rsrcmgr=self.__resources_manager, laparams=self.__params_manager)
         self.__interpreter = PDFPageInterpreter(rsrcmgr=self.__resources_manager, device=self.__aggregator)
+        self.__analyzer = None
 
     def parse(self, input_path, password=""):
         result = []
@@ -36,8 +37,8 @@ class PDFParser:
 
     def analyze(self, rule, parse_result):
         if rule == "Monetary Policy Report":
-            analyzer = MonetaryPolicyReportAnalyzer()
-            result = analyzer.analyze(parse_result)
+            self.__analyzer = MonetaryPolicyReportAnalyzer()
+            result = self.__analyzer.analyze(parse_result)
 
         else:
             print("rule is invalid, doesn't analyze content")
@@ -51,9 +52,22 @@ class MonetaryPolicyReportAnalyzer:
         self.pages = OrderedDict()
         self.indices = OrderedDict()
         self.index_to_page = OrderedDict()
+        self.mean_height = 0
+
+    def get_mean_height(self, parse_result):
+        contents = []
+
+        for value in parse_result.values():
+            contents += value
+
+        heights = [item[1] for item in contents]
+        mean_height = sum(heights) / len(heights)
+
+        return mean_height
 
     def analyze(self, parse_result):
         self.pages = self.divide_to_pages(parse_result)
+        self.mean_height = self.get_mean_height(self.pages)
         self.pages = self.delete_non_text_part(self.pages)
 
         return self.pages
@@ -95,7 +109,7 @@ class MonetaryPolicyReportAnalyzer:
         return pages_dict
 
     def delete_non_text_part(self, pages_dict):
-        in_table, in_figure, in_column = False, False, False
+        in_table, match_table_ending, in_figure, in_column = False, False, False, False
 
         for page_index, pages_content in pages_dict.items():
             if not page_index.isnumeric():
@@ -115,39 +129,35 @@ class MonetaryPolicyReportAnalyzer:
                     elif re.match('表 \\d+ {2}', content):
                         in_table = True
                         tables.append(ind)
+                        match_table_ending = False
 
                     elif re.match('数据来源：[^。]+?。', content):
                         figures.append(ind)
 
                         if not re.match('.+?图 \\d+ {2}', content):
                             in_figure = True
+                    continue
 
                 if in_column:
-                    if ind == 0:
-                        columns.append(ind)
+                    if height > self.mean_height:
+                        in_column = False
                     else:
-                        if height - pages_content[ind-1][1] > 2:
-                            in_column = False
-                        else:
-                            columns.append(ind)
+                        columns.append(ind)
                     continue
 
                 if in_table:
-                    if ind == 0:
-                        tables.append(ind)
+                    if re.match('.*?数据来源：[^。]+?。', content):
+                        match_table_ending = True
+                    if match_table_ending and height > self.mean_height:
+                        in_table = False
                     else:
-                        if re.match('.*?数据来源：[^。]+?。', content):
-                            in_table = False
                         tables.append(ind)
                     continue
 
                 if in_figure:
-                    if ind == 0:
-                        figures.append(ind)
-                    else:
-                        if re.match('图 \\d+ {2}', content):
-                            in_figure = False
-                        figures.append(ind)
+                    if re.match('图 \\d+ {2}', content):
+                        in_figure = False
+                    figures.append(ind)
                     continue
 
             cache = [item for item in pages_content if pages_content.index(item) not in (tables + figures + columns)]
@@ -157,7 +167,7 @@ class MonetaryPolicyReportAnalyzer:
 
 
 def main():
-    pdf_input_path = "/Users/zhangwentao/Documents/中信/项目/金融资讯分析/货币政策执行报告 -输入包+输出包/货币政策执行报告 -输入包/2020Q2.pdf"
+    pdf_input_path = "/Users/zhangwentao/PycharmProjects/nlp/Resources/2020Q2.pdf"
     agent = PDFParser()
     result = agent.parse(pdf_input_path)
 
