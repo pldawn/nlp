@@ -50,10 +50,10 @@ class PDFParser:
 class MonetaryPolicyReportAnalyzer:
     def __init__(self):
         self.pages = OrderedDict()
-        self.indices = OrderedDict()
-        self.index_to_page = OrderedDict()
+        self.index_tree = IndexNode()
         self.mean_height = 0
         self.most_x0 = 0
+        self.title_max_length = 30
 
     def get_mean_height(self, pages_dict):
         contents = []
@@ -88,8 +88,11 @@ class MonetaryPolicyReportAnalyzer:
         self.mean_height = self.get_mean_height(self.pages)
         self.pages = self.delete_non_text_part(self.pages)
         self.most_x0 = self.get_most_x0(self.pages)
+        self.pages = self.merge_continuous_paragraph(self.pages)
+        self.mean_height = self.get_mean_height(self.pages)
+        plain_text = self.concat_pages_to_plain_text(self.pages)
 
-        return self.pages
+        return plain_text
 
     def divide_to_pages(self, parse_result):
         cache = []
@@ -173,6 +176,8 @@ class MonetaryPolicyReportAnalyzer:
                     if match_table_ending and height > self.mean_height:
                         in_table = False
                     else:
+                        if re.match('表 \\d+ {2}', content):
+                            match_table_ending = False
                         tables.append(ind)
                     continue
 
@@ -188,7 +193,140 @@ class MonetaryPolicyReportAnalyzer:
         return pages_dict
 
     def merge_continuous_paragraph(self, pages_dict):
-        pass
+        for page_index, page_content in pages_dict.items():
+            if not page_index.isnumeric() or not page_content:
+                continue
+
+            cache_page_content = []
+            cache_content = ""
+            cache_height = []
+            cache_x0 = 0
+
+            for ind in range(len(page_content)):
+                (x0, height, content) = page_content[ind]
+
+                if abs(x0 - self.most_x0) >= 5:
+                    if cache_content:
+                        cache_mean_height = sum(cache_height) / len(cache_height)
+                        cache_page_content.append((cache_x0, cache_mean_height, cache_content))
+
+                        cache_content = ""
+                        cache_height = []
+
+                    cache_content += content
+                    cache_height.append(height)
+                    cache_x0 = x0
+                else:
+                    cache_content += content
+                    cache_height.append(height)
+
+                    if ind == 0:
+                        cache_x0 = x0
+
+            cache_mean_height = sum(cache_height) / len(cache_height)
+            cache_page_content.append((cache_x0, cache_mean_height, cache_content))
+
+            pages_dict[page_index] = cache_page_content
+
+        return pages_dict
+
+    def concat_pages_to_plain_text(self, pages_dict):
+        plain_text = []
+
+        for page_index, page_content in pages_dict.items():
+            if not page_index.isnumeric() or not page_content:
+                continue
+
+            for (x0, height, content) in page_content:
+                if abs(x0 - self.most_x0) >= 5:
+                    plain_text.append([page_index, x0, height, content])
+                else:
+                    plain_text[-1][2] = (plain_text[-1][1] + height) / 2
+                    plain_text[-1][3] += content
+
+        return plain_text
+
+    def convert_to_tree(self, plain_text):
+        parent_stack = [('root', self.index_tree)]
+
+        for (page_index, x0s, height, content) in plain_text:
+            if len(content) <= self.title_max_length:
+                index_token = self.get_index_token(content)
+
+                # 是标题行
+                if index_token is not None:
+                    new_node = IndexNode()
+                    new_node.page = page_index
+                    new_node.title = content
+
+                    # 与上一标题行平级
+                    if index_token == parent_stack[-1][0]:
+                        pass
+                    # 是上一标题行
+                    else:
+                        new_node.parent = parent_stack[-1][1]
+                        parent_stack[-1][1].children.append(new_node)
+                        parent_stack.append((index_token, new_node))
+
+    def get_index_token(self, text):
+        pattern = re.compile('第[一二三四五六七八九十]{1,2}部分')
+        result = re.match(pattern, text)
+        if result:
+            return result.group(0)
+
+        pattern = re.compile('([一二三四五六七八九十]{1,2})([.、])')
+        result = re.match(pattern, text)
+        if result:
+            return result.group(1)
+
+        pattern = re.compile('[（(][一二三四五六七八九十0-9]{1,2}[)）]')
+        result = re.match(pattern, text)
+        if result:
+            result = re.sub('\\(', '（', result.group(0))
+            result = re.sub('\\)', '）', result)
+            return result
+
+        pattern = re.compile('([0-9]{1,2})([.、])')
+        result = re.match(pattern, text)
+        if result:
+            return result.group(1)
+
+        return None
+
+
+class IndexNode:
+    def __init__(self):
+        self.title = ""
+        self.paragraphs = []
+        self.children = []
+        self.parent = "root"
+        self.page = 0
+
+    def get_paragraph(self, ind):
+        if len(self.paragraphs) < ind + 1:
+            return None
+        return self.paragraphs[ind]
+
+    def get_child_by_index(self, ind):
+        if len(self.children) < ind + 1:
+            return None
+        return self.children[ind]
+
+    def get_child_by_title(self, title):
+        for child in self.children:
+            if child.ttile == title:
+                return child
+        return None
+
+    def is_leaf(self):
+        if self.children:
+            return False
+        return True
+
+    def is_root(self):
+        if self.parent == "root":
+            return True
+        return False
 
 
 def main():
