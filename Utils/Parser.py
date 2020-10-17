@@ -51,19 +51,27 @@ class MonetaryPolicyReportAnalyzer:
     def __init__(self):
         self.pages = OrderedDict()
         self.index_tree = IndexNode()
-        self.mean_height = 0
+        self.most_height = 0
         self.most_x0 = 0
         self.title_max_length = 30
 
-    def get_mean_height(self, pages_dict):
+    def get_most_height(self, pages_dict):
         contents = []
         for value in pages_dict.values():
             contents += value
 
         heights = [item[1] for item in contents]
-        mean_height = sum(heights) / len(heights)
+        freq_dict = {}
 
-        return mean_height
+        for height in heights:
+            freq_dict[height] = freq_dict.setdefault(height, 0) + 1
+
+        heights = [(k, v) for k, v in freq_dict.items()]
+        heights.sort(key=lambda x: x[1])
+
+        most_height = heights[-1][0]
+
+        return most_height
 
     def get_most_x0(self, pages_dict):
         contents = []
@@ -76,7 +84,7 @@ class MonetaryPolicyReportAnalyzer:
         for x0 in x0s:
             freq_dict[x0] = freq_dict.setdefault(x0, 0) + 1
 
-        x0s = [(k ,v) for k,v in freq_dict.items()]
+        x0s = [(k, v) for k, v in freq_dict.items()]
         x0s.sort(key=lambda x: x[1])
 
         most_x0 = x0s[-1][0]
@@ -85,14 +93,14 @@ class MonetaryPolicyReportAnalyzer:
 
     def analyze(self, parse_result):
         self.pages = self.divide_to_pages(parse_result)
-        self.mean_height = self.get_mean_height(self.pages)
+        self.most_height = self.get_most_height(self.pages)
         self.pages = self.delete_non_text_part(self.pages)
         self.most_x0 = self.get_most_x0(self.pages)
         self.pages = self.merge_continuous_paragraph(self.pages)
-        self.mean_height = self.get_mean_height(self.pages)
         plain_text = self.concat_pages_to_plain_text(self.pages)
+        self.index_tree = self.convert_to_tree(plain_text)
 
-        return plain_text
+        return self.index_tree
 
     def divide_to_pages(self, parse_result):
         cache = []
@@ -144,11 +152,11 @@ class MonetaryPolicyReportAnalyzer:
                 (_, height, content) = line
 
                 if not (in_table or in_figure or in_column):
-                    if re.match('专栏 \\d+ {2}', content):
+                    if re.match('专栏 \\d+ ', content):
                         in_column = True
                         columns.append(ind)
 
-                    elif re.match('表 \\d+ {2}', content):
+                    elif re.match('表 \\d+ ', content):
                         in_table = True
                         tables.append(ind)
                         match_table_ending = False
@@ -156,12 +164,12 @@ class MonetaryPolicyReportAnalyzer:
                     elif re.match('数据来源：[^。]+?。', content):
                         figures.append(ind)
 
-                        if not re.match('.+?图 \\d+ {2}', content):
+                        if not re.match('.+?图 \\d+ ', content):
                             in_figure = True
                     continue
 
                 if in_column:
-                    if height > self.mean_height:
+                    if height > self.most_height:
                         in_column = False
                     else:
                         columns.append(ind)
@@ -173,7 +181,7 @@ class MonetaryPolicyReportAnalyzer:
                         tables.append(ind)
                         continue
 
-                    if match_table_ending and height > self.mean_height:
+                    if match_table_ending and height > self.most_height:
                         in_table = False
                     else:
                         if re.match('表 \\d+ {2}', content):
@@ -246,52 +254,63 @@ class MonetaryPolicyReportAnalyzer:
 
         return plain_text
 
-    def convert_to_tree(self, plain_text):
-        parent_stack = [('root', self.index_tree)]
-
-        for (page_index, x0s, height, content) in plain_text:
-            if len(content) <= self.title_max_length:
-                index_token = self.get_index_token(content)
-
-                # 是标题行
-                if index_token is not None:
-                    new_node = IndexNode()
-                    new_node.page = page_index
-                    new_node.title = content
-
-                    # 与上一标题行平级
-                    if index_token == parent_stack[-1][0]:
-                        pass
-                    # 是上一标题行
-                    else:
-                        new_node.parent = parent_stack[-1][1]
-                        parent_stack[-1][1].children.append(new_node)
-                        parent_stack.append((index_token, new_node))
-
     def get_index_token(self, text):
         pattern = re.compile('第[一二三四五六七八九十]{1,2}部分')
         result = re.match(pattern, text)
         if result:
-            return result.group(0)
+            return 'A'
 
         pattern = re.compile('([一二三四五六七八九十]{1,2})([.、])')
         result = re.match(pattern, text)
         if result:
-            return result.group(1)
+            return 'B'
 
         pattern = re.compile('[（(][一二三四五六七八九十0-9]{1,2}[)）]')
         result = re.match(pattern, text)
         if result:
-            result = re.sub('\\(', '（', result.group(0))
-            result = re.sub('\\)', '）', result)
-            return result
+            return 'C'
 
         pattern = re.compile('([0-9]{1,2})([.、])')
         result = re.match(pattern, text)
         if result:
-            return result.group(1)
+            return 'D'
 
         return None
+
+    def convert_to_tree(self, plain_text):
+        root_node = IndexNode()
+        parent_stack = [('root', root_node)]
+
+        for (page_index, x0s, height, content) in plain_text:
+            index_token = self.get_index_token(content)
+
+            if len(content) <= self.title_max_length and index_token is not None:
+                new_node = IndexNode()
+                new_node.page = page_index
+                new_node.title = content
+                is_added = False
+
+                # 与上一标题行平级
+                for i in range(len(parent_stack), 0, -1):
+                    ind = i - 1
+                    if parent_stack[ind][0] == index_token:
+                        while len(parent_stack) > ind:
+                            parent_stack.pop()
+                        parent_stack[-1][1].children.append(new_node)
+                        new_node.parent = parent_stack[-1][1]
+                        parent_stack.append((index_token, new_node))
+                        is_added = True
+                        break
+
+                if not is_added:
+                    parent_stack[-1][1].children.append(new_node)
+                    new_node.parent = parent_stack[-1][1]
+                    parent_stack.append((index_token, new_node))
+
+            else:
+                parent_stack[-1][1].paragraphs.append(content)
+
+        return root_node
 
 
 class IndexNode:
@@ -330,16 +349,16 @@ class IndexNode:
 
 
 def main():
-    pdf_input_path = "../Resources/2020Q2.pdf"
+    pdf_input_path = "../Resources/2020Q1.pdf"
     agent = PDFParser()
-    result = agent.parse(pdf_input_path)
+    parse_result = agent.parse(pdf_input_path)
 
-    # with open("result.txt", "w") as f:
-    #     for line in result:
-    #         f.write(str(line[0] + '\t' + '%04.1f' % line[1] + '\t' + line[2] + '\n'))
+    with open("result.txt", "w") as f:
+        for line in parse_result:
+            f.write(str(line[0]) + '\t' + '%04.1f' % line[1] + '\t' + line[2] + '\n')
 
-    pages = agent.analyze("Monetary Policy Report", result)
-    print(pages)
+    document = agent.analyze("Monetary Policy Report", parse_result)
+    print(document)
 
 
 if __name__ == '__main__':
