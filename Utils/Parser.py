@@ -1,5 +1,5 @@
 import re
-import unicodedata as uni
+import Levenshtein as edit
 from collections import OrderedDict
 from pdfminer.pdfparser import PDFParser as mPDFParser, PDFDocument
 from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
@@ -371,14 +371,14 @@ class PDFComparer:
         elif not title_a and title_b:
             split_title_b = re.split('[。，！？；]', title_b)
             for part in split_title_b:
-                alignment.append((None, part))
+                alignment.append(("", part))
 
             return alignment
 
         elif title_a and title_b:
             split_title_a = re.split('[。，！？；]', title_a)
             for part in split_title_a:
-                alignment.append((part, None))
+                alignment.append((part, ""))
 
             return alignment
 
@@ -397,6 +397,21 @@ class PDFComparer:
 
     def align_text_list(self, list_a, list_b):
         alignment = []
+        b_to_a_dist = {}
+
+        for ind_a in range(len(list_a)):
+            str_a = list_a[ind_a]
+
+            for ind_b in range(len(list_b)):
+                str_b = list_b[ind_b]
+                dist = edit.distance(str_a, str_b) / (len(str_a) + len(str_b) / 2)
+                if dist <= 0.2:
+                    if dist < b_to_a_dist.setdefault(ind_b, {}).setdefault(ind_a, 1):
+                        b_to_a_dist.setdefault(ind_b, {})[ind_a] = dist
+
+        a_to_b_dist = {}
+        for ind in b_to_a_dist:
+
 
         return alignment
 
