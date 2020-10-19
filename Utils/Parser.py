@@ -1,4 +1,5 @@
 import re
+import unicodedata as uni
 from collections import OrderedDict
 from pdfminer.pdfparser import PDFParser as mPDFParser, PDFDocument
 from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
@@ -54,6 +55,19 @@ class MonetaryPolicyReportAnalyzer:
         self.most_height = 0
         self.most_x0 = 0
         self.title_max_length = 30
+        self.pdf_name = ""
+
+    def analyze(self, parse_result):
+        self.pages = self.divide_to_pages(parse_result)
+        self.pdf_name = self.get_pdf_name(self.pages)
+        self.most_height = self.get_most_height(self.pages)
+        self.pages = self.delete_non_text_part(self.pages)
+        self.most_x0 = self.get_most_x0(self.pages)
+        self.pages = self.merge_continuous_paragraph(self.pages)
+        plain_text = self.concat_pages_to_plain_text(self.pages)
+        self.index_tree = self.convert_to_tree(plain_text)
+
+        return self.index_tree
 
     def get_most_height(self, pages_dict):
         contents = []
@@ -91,16 +105,11 @@ class MonetaryPolicyReportAnalyzer:
 
         return most_x0
 
-    def analyze(self, parse_result):
-        self.pages = self.divide_to_pages(parse_result)
-        self.most_height = self.get_most_height(self.pages)
-        self.pages = self.delete_non_text_part(self.pages)
-        self.most_x0 = self.get_most_x0(self.pages)
-        self.pages = self.merge_continuous_paragraph(self.pages)
-        plain_text = self.concat_pages_to_plain_text(self.pages)
-        self.index_tree = self.convert_to_tree(plain_text)
+    def get_pdf_name(self, pages_dict):
+        first_path_content = pages_dict['O']
+        pdf_name = first_path_content[0][-1] + first_path_content[1][-1]
 
-        return self.index_tree
+        return pdf_name
 
     def divide_to_pages(self, parse_result):
         cache = []
@@ -279,6 +288,7 @@ class MonetaryPolicyReportAnalyzer:
 
     def convert_to_tree(self, plain_text):
         root_node = IndexNode()
+        root_node.title = self.pdf_name
         parent_stack = [('root', root_node)]
 
         for (page_index, x0s, height, content) in plain_text:
@@ -308,7 +318,8 @@ class MonetaryPolicyReportAnalyzer:
                     parent_stack.append((index_token, new_node))
 
             else:
-                parent_stack[-1][1].paragraphs.append(content)
+                sentences = re.split('[。？！；]', content)
+                parent_stack[-1][1].paragraphs.append(sentences)
 
         return root_node
 
@@ -321,31 +332,81 @@ class IndexNode:
         self.parent = "root"
         self.page = 0
 
-    def get_paragraph(self, ind):
-        if len(self.paragraphs) < ind + 1:
-            return None
-        return self.paragraphs[ind]
 
-    def get_child_by_index(self, ind):
-        if len(self.children) < ind + 1:
-            return None
-        return self.children[ind]
+class PDFComparer:
+    def __init__(self):
+        self.pdfs = IndexPairNode()
+        self.parser = PDFParser()
 
-    def get_child_by_title(self, title):
-        for child in self.children:
-            if child.ttile == title:
-                return child
-        return None
+    def compare_two_pdf(self, pdf_a_path, pdf_b_path, rule, password_a="", password_b=""):
+        parse_result_a = self.parser.parse(pdf_a_path, password_a)
+        index_tree_a = self.parser.analyze(rule, parse_result_a)
 
-    def is_leaf(self):
-        if self.children:
-            return False
-        return True
+        parse_result_b = self.parser.parse(pdf_b_path, password_b)
+        index_tree_b = self.parser.analyze(rule, parse_result_b)
 
-    def is_root(self):
-        if self.parent == "root":
-            return True
-        return False
+        self.pdfs.target = (index_tree_a, index_tree_b)
+        self.compare_index_pair_node(self.pdfs)
+
+        return self.pdfs
+
+    def compare_index_pair_node(self, index_node):
+        index_node.title_alignment = self.align_title(index_node)
+        index_node.paragraphs_alignment = self.align_paragraphs(index_node)
+        index_node.children_alignment = self.align_children(index_node)
+
+        if index_node.children_alignment:
+            for node in index_node.children_alignment:
+                self.compare_index_pair_node(node)
+
+    def align_title(self, index_node):
+        title_a = index_node.target[0].title
+        title_b = index_node.target[1].title
+        alignment = []
+
+        if not title_a and not title_b:
+
+            return alignment
+
+        elif not title_a and title_b:
+            split_title_b = re.split('[。，！？；]', title_b)
+            for part in split_title_b:
+                alignment.append((None, part))
+
+            return alignment
+
+        elif title_a and title_b:
+            split_title_a = re.split('[。，！？；]', title_a)
+            for part in split_title_a:
+                alignment.append((part, None))
+
+            return alignment
+
+        else:
+            split_title_a = re.split('[。，！？；]', title_a)
+            split_title_b = re.split('[。，！？；]', title_b)
+            alignment = self.align_text_list(split_title_a, split_title_b)
+
+            return alignment
+
+    def align_children(self, index_node):
+        return [IndexPairNode()]
+
+    def align_paragraphs(self, index_node):
+        return ""
+
+    def align_text_list(self, list_a, list_b):
+        alignment = []
+
+        return alignment
+
+
+class IndexPairNode:
+    def __init__(self):
+        self.target = None
+        self.title_alignment = None
+        self.paragraphs_alignment = None
+        self.children_alignment = None
 
 
 def main():
@@ -353,9 +414,9 @@ def main():
     agent = PDFParser()
     parse_result = agent.parse(pdf_input_path)
 
-    with open("result.txt", "w") as f:
-        for line in parse_result:
-            f.write(str(line[0]) + '\t' + '%04.1f' % line[1] + '\t' + line[2] + '\n')
+    # with open("result.txt", "w") as f:
+    #     for line in parse_result:
+    #         f.write(str(line[0]) + '\t' + '%04.1f' % line[1] + '\t' + line[2] + '\n')
 
     document = agent.analyze("Monetary Policy Report", parse_result)
     print(document)
