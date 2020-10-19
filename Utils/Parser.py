@@ -336,32 +336,33 @@ class IndexNode:
 class PDFComparer:
     def __init__(self):
         self.pdfs = IndexPairNode()
-        self.parser = PDFParser()
 
     def compare_two_pdf(self, pdf_a_path, pdf_b_path, rule, password_a="", password_b=""):
-        parse_result_a = self.parser.parse(pdf_a_path, password_a)
-        index_tree_a = self.parser.analyze(rule, parse_result_a)
+        parser_a = PDFParser()
+        parse_result_a = parser_a.parse(pdf_a_path, password_a)
+        index_tree_a = parser_a.analyze(rule, parse_result_a)
 
-        parse_result_b = self.parser.parse(pdf_b_path, password_b)
-        index_tree_b = self.parser.analyze(rule, parse_result_b)
+        parser_b = PDFParser()
+        parse_result_b = parser_b.parse(pdf_b_path, password_b)
+        index_tree_b = parser_b.analyze(rule, parse_result_b)
 
         self.pdfs.target = (index_tree_a, index_tree_b)
         self.compare_index_pair_node(self.pdfs)
 
         return self.pdfs
 
-    def compare_index_pair_node(self, index_node):
-        index_node.title_alignment = self.align_title(index_node)
-        index_node.paragraphs_alignment = self.align_paragraphs(index_node)
-        index_node.children_alignment = self.align_children(index_node)
+    def compare_index_pair_node(self, index_pair_node):
+        index_pair_node.title_alignment = self.align_title(index_pair_node)
+        index_pair_node.paragraphs_alignment = self.align_paragraphs(index_pair_node)
+        index_pair_node.children_alignment = self.align_children(index_pair_node)
 
-        if index_node.children_alignment:
-            for node in index_node.children_alignment:
+        if index_pair_node.children_alignment:
+            for node in index_pair_node.children_alignment:
                 self.compare_index_pair_node(node)
 
-    def align_title(self, index_node):
-        title_a = index_node.target[0].title
-        title_b = index_node.target[1].title
+    def align_title(self, index_pair_node):
+        title_a = index_pair_node.target[0].title
+        title_b = index_pair_node.target[1].title
         alignment = []
 
         if not title_a and not title_b:
@@ -389,11 +390,11 @@ class PDFComparer:
 
             return alignment
 
-    def align_children(self, index_node):
+    def align_children(self, index_pair_node):
         return [IndexPairNode()]
 
-    def align_paragraphs(self, index_node):
-        return ""
+    def align_paragraphs(self, index_pair_node):
+        return []
 
     def align_text_list(self, list_a, list_b):
         distances = []
@@ -429,7 +430,7 @@ class PDFComparer:
 
         distances.sort(key=lambda x: x[-1])
         aligned = distances[0]
-        alignment.append(aligned)
+        alignment.append((list_a[aligned[0]], list_b[aligned[1], aligned[-1]]))
 
         ind_a = aligned[0]
         ind_b = aligned[1]
@@ -441,7 +442,15 @@ class PDFComparer:
         alignment_left = self.align_distances(distances_left, list_a_left, list_b_left)
         alignment_right = self.align_distances(distances_right, list_a_right, list_b_right)
 
-        alignment = alignment_left + alignment + alignment_right
+        alignment_cache = alignment_left + alignment + alignment_right
+        for item in alignment_cache:
+            if len(item) == 2:
+                alignment.append(item)
+            elif item[-1] <= 0.2:
+                alignment.append((item[0], item[1]))
+            else:
+                alignment.append((item[0], ""))
+                alignment.append(("", item[1]))
 
         return alignment
 
@@ -455,16 +464,19 @@ class IndexPairNode:
 
 
 def main():
-    pdf_input_path = "../Resources/2020Q1.pdf"
-    agent = PDFParser()
-    parse_result = agent.parse(pdf_input_path)
-
+    # pdf_input_path = "../Resources/2020Q1.pdf"
+    # agent = PDFParser()
+    # parse_result = agent.parse(pdf_input_path)
+    #
     # with open("result.txt", "w") as f:
     #     for line in parse_result:
     #         f.write(str(line[0]) + '\t' + '%04.1f' % line[1] + '\t' + line[2] + '\n')
-
-    document = agent.analyze("Monetary Policy Report", parse_result)
-    print(document)
+    #
+    # document = agent.analyze("Monetary Policy Report", parse_result)
+    # print(document)
+    agent = PDFComparer()
+    result = agent.compare_two_pdf("../Resources/2020Q1.pdf", "../Resources/2020Q2.pdf", "Monetary Policy Report")
+    print(result)
 
 
 if __name__ == '__main__':
