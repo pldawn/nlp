@@ -396,22 +396,52 @@ class PDFComparer:
         return ""
 
     def align_text_list(self, list_a, list_b):
-        alignment = []
-        b_to_a_dist = {}
+        distances = []
 
         for ind_a in range(len(list_a)):
             str_a = list_a[ind_a]
-
             for ind_b in range(len(list_b)):
                 str_b = list_b[ind_b]
-                dist = edit.distance(str_a, str_b) / (len(str_a) + len(str_b) / 2)
-                if dist <= 0.2:
-                    if dist < b_to_a_dist.setdefault(ind_b, {}).setdefault(ind_a, 1):
-                        b_to_a_dist.setdefault(ind_b, {})[ind_a] = dist
+                dist = edit.distance(str_a, str_b) / ((len(str_a) + len(str_b)) / 2)
+                distances.append((ind_a, ind_b, dist))
 
-        a_to_b_dist = {}
-        for ind in b_to_a_dist:
+        alignment = self.align_distances(distances, list_a, list_b)
 
+        return alignment
+
+    def align_distances(self, distances, list_a, list_b):
+        alignment = []
+
+        if not list_a and not list_b:
+            return alignment
+
+        if not list_a:
+            for b in list_b:
+                alignment.append(("", b))
+
+            return alignment
+
+        if not list_b:
+            for a in list_a:
+                alignment.append((a, ""))
+
+            return alignment
+
+        distances.sort(key=lambda x: x[-1])
+        aligned = distances[0]
+        alignment.append(aligned)
+
+        ind_a = aligned[0]
+        ind_b = aligned[1]
+        list_a_left, list_a_right = list_a[:ind_a], list_a[ind_a + 1:]
+        list_b_left, list_b_right = list_b[:ind_b], list_b[ind_b + 1:]
+        distances_left = [item for item in distances if item[0] < ind_a and item[1] < ind_b]
+        distances_right = [item for item in distances if item[0] > ind_a and item[1] > ind_b]
+
+        alignment_left = self.align_distances(distances_left, list_a_left, list_b_left)
+        alignment_right = self.align_distances(distances_right, list_a_right, list_b_right)
+
+        alignment = alignment_left + alignment + alignment_right
 
         return alignment
 
