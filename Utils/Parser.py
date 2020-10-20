@@ -402,9 +402,14 @@ class PDFComparer:
         return alignment
 
     def align_paragraphs(self, index_pair_node):
-        paragraphs_a = index_pair_node.target[0].paragraphs
-        paragraphs_b = index_pair_node.target[1].paragraphs
+        paragraphs_a = [re.split("[。？！]", i) for i in index_pair_node.target[0].paragraphs]
+        paragraphs_b = [re.split("[。？！]", i) for i in index_pair_node.target[1].paragraphs]
         alignment = []
+
+        for ind in range(len(paragraphs_a)):
+            paragraphs_a[ind] = [i for i in paragraphs_a[ind] if i]
+        for ind in range(len(paragraphs_b)):
+            paragraphs_b[ind] = [i for i in paragraphs_b[ind] if i]
 
         if not paragraphs_a and not paragraphs_b:
 
@@ -412,17 +417,33 @@ class PDFComparer:
 
         elif not paragraphs_a and paragraphs_b:
             for para in paragraphs_b:
-                alignment.append(([], [("insert", para)]))
+                cache = []
+                for sent in para:
+                    cache.append(([], [("insert", sent)]))
+                alignment.append(cache)
 
         elif paragraphs_a and not paragraphs_b:
             for para in paragraphs_a:
-                alignment.append((["delete", para], []))
+                cache = []
+                for sent in para:
+                    cache.append((["delete", sent], []))
+                alignment.append(cache)
 
         else:
+            paragraphs_a = ["。".join(sents) for sents in paragraphs_a]
+            paragraphs_b = ["。".join(sents) for sents in paragraphs_b]
             alignment = self.align_text_list(paragraphs_a, paragraphs_b)
 
-            for aligned in alignment:
-                alignment.append((self.edit_ops(aligned[0], aligned[1])))
+            for ind in range(len(alignment)):
+                aligned = alignment[ind]
+                sent_list_a = aligned[0].split("。") if aligned[0] else []
+                sent_list_b = aligned[1].split("。") if aligned[1] else []
+                alignment_sents = self.align_text_list(sent_list_a, sent_list_b)
+
+                for i in range(len(alignment_sents)):
+                    alignment_sents[i] = (self.edit_ops(alignment_sents[i][0], alignment_sents[i][1]))
+
+                alignment[ind] = alignment_sents
 
         return alignment
 
@@ -475,7 +496,7 @@ class PDFComparer:
         for item in alignment_cache:
             if len(item) == 2:
                 alignment.append(item)
-            elif item[-1] <= 0.5:
+            elif item[-1] <= 1:
                 alignment.append((item[0], item[1]))
             else:
                 alignment.append((item[0], ""))
