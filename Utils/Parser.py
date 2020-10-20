@@ -318,8 +318,7 @@ class MonetaryPolicyReportAnalyzer:
                     parent_stack.append((index_token, new_node))
 
             else:
-                sentences = re.split('[。？！；]', content)
-                parent_stack[-1][1].paragraphs.append(sentences)
+                parent_stack[-1][1].paragraphs.append(content)
 
         return root_node
 
@@ -363,38 +362,69 @@ class PDFComparer:
     def align_title(self, index_pair_node):
         title_a = index_pair_node.target[0].title
         title_b = index_pair_node.target[1].title
-        alignment = []
+        alignment = (self.edit_ops(title_a, title_b))
 
-        if not title_a and not title_b:
-
-            return alignment
-
-        elif not title_a and title_b:
-            split_title_b = re.split('[。，！？；]', title_b)
-            for part in split_title_b:
-                alignment.append(("", part))
-
-            return alignment
-
-        elif title_a and title_b:
-            split_title_a = re.split('[。，！？；]', title_a)
-            for part in split_title_a:
-                alignment.append((part, ""))
-
-            return alignment
-
-        else:
-            split_title_a = re.split('[。，！？；]', title_a)
-            split_title_b = re.split('[。，！？；]', title_b)
-            alignment = self.align_text_list(split_title_a, split_title_b)
-
-            return alignment
+        return alignment
 
     def align_children(self, index_pair_node):
-        return [IndexPairNode()]
+        children_a = index_pair_node.target[0].children
+        children_b = index_pair_node.target[1].children
+        alignment = []
+
+        if not children_a and not children_b:
+
+            return alignment
+
+        elif not children_a and children_b:
+            for child in children_b:
+                node_pair = IndexPairNode()
+                node_pair.target = (IndexNode(), child)
+                alignment.append(node_pair)
+
+        elif children_a and not children_b:
+            for child in children_a:
+                node_pair = IndexPairNode()
+                node_pair.target = (child, IndexNode())
+                alignment.append(node_pair)
+
+        else:
+            title_a = [child.title for child in children_a]
+            title_b = [child.title for child in children_b]
+            alignment_title = self.align_text_list(title_a, title_b)
+
+            for aligned in alignment_title:
+                node_a = children_a[title_a.index(aligned[0])] if aligned[0] else IndexNode()
+                node_b = children_b[title_b.index(aligned[1])] if aligned[1] else IndexNode()
+                node_pair = IndexPairNode()
+                node_pair.target = (node_a, node_b)
+                alignment.append(node_pair)
+
+        return alignment
 
     def align_paragraphs(self, index_pair_node):
-        return []
+        paragraphs_a = index_pair_node.target[0].paragraphs
+        paragraphs_b = index_pair_node.target[1].paragraphs
+        alignment = []
+
+        if not paragraphs_a and not paragraphs_b:
+
+            return alignment
+
+        elif not paragraphs_a and paragraphs_b:
+            for para in paragraphs_b:
+                alignment.append(([], [("insert", para)]))
+
+        elif paragraphs_a and not paragraphs_b:
+            for para in paragraphs_a:
+                alignment.append((["delete", para], []))
+
+        else:
+            alignment = self.align_text_list(paragraphs_a, paragraphs_b)
+
+            for aligned in alignment:
+                alignment.append((self.edit_ops(aligned[0], aligned[1])))
+
+        return alignment
 
     def align_text_list(self, list_a, list_b):
         distances = []
@@ -410,49 +440,77 @@ class PDFComparer:
 
         return alignment
 
-    def align_distances(self, distances, list_a, list_b):
+    def align_distances(self, distances, list_a, list_b, start_a=0, start_b=0):
         alignment = []
+        alignment_cache = []
 
         if not list_a and not list_b:
             return alignment
 
-        if not list_a:
+        if not list_a and list_b:
             for b in list_b:
                 alignment.append(("", b))
-
             return alignment
 
-        if not list_b:
+        if list_a and not list_b:
             for a in list_a:
                 alignment.append((a, ""))
-
             return alignment
 
         distances.sort(key=lambda x: x[-1])
         aligned = distances[0]
-        alignment.append((list_a[aligned[0]], list_b[aligned[1], aligned[-1]]))
+        ind_a = aligned[0] - start_a
+        ind_b = aligned[1] - start_b
 
-        ind_a = aligned[0]
-        ind_b = aligned[1]
+        alignment_cache.append((list_a[ind_a], list_b[ind_b], aligned[-1]))
         list_a_left, list_a_right = list_a[:ind_a], list_a[ind_a + 1:]
         list_b_left, list_b_right = list_b[:ind_b], list_b[ind_b + 1:]
-        distances_left = [item for item in distances if item[0] < ind_a and item[1] < ind_b]
-        distances_right = [item for item in distances if item[0] > ind_a and item[1] > ind_b]
+        distances_left = [item for item in distances if item[0] < aligned[0] and item[1] < aligned[1]]
+        distances_right = [item for item in distances if item[0] > aligned[0] and item[1] > aligned[1]]
 
-        alignment_left = self.align_distances(distances_left, list_a_left, list_b_left)
-        alignment_right = self.align_distances(distances_right, list_a_right, list_b_right)
+        alignment_left = self.align_distances(distances_left, list_a_left, list_b_left, start_a, start_b)
+        alignment_right = self.align_distances(distances_right, list_a_right, list_b_right, aligned[0] + 1, aligned[1] + 1)
+        alignment_cache = alignment_left + alignment_cache + alignment_right
 
-        alignment_cache = alignment_left + alignment + alignment_right
         for item in alignment_cache:
             if len(item) == 2:
                 alignment.append(item)
-            elif item[-1] <= 0.2:
+            elif item[-1] <= 0.5:
                 alignment.append((item[0], item[1]))
             else:
                 alignment.append((item[0], ""))
                 alignment.append(("", item[1]))
 
         return alignment
+
+    def edit_ops(self, text_a, text_b):
+        ops_a, ops_b = [], []
+
+        if not text_a and not text_b:
+            return ops_a, ops_b
+
+        if text_a and not text_b:
+            ops_a.append(("delete", text_a))
+
+            return ops_a, ops_b
+
+        if not text_a and text_b:
+            ops_b.append(("insert", text_b))
+
+            return ops_a, ops_b
+
+        ops = edit.opcodes(text_a, text_b)
+        for op in ops:
+            op_name = op[0]
+            slice_a = text_a[op[1]: op[2]]
+            slice_b = text_b[op[3]: op[4]]
+
+            if slice_a:
+                ops_a.append((op_name, slice_a))
+            if slice_b:
+                ops_b.append((op_name, slice_b))
+
+        return ops_a, ops_b
 
 
 class IndexPairNode:
