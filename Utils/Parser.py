@@ -1,4 +1,6 @@
 import re
+import codecs
+import markdown
 import Levenshtein as edit
 from collections import OrderedDict
 from pdfminer.pdfparser import PDFParser as mPDFParser, PDFDocument
@@ -178,8 +180,25 @@ class MonetaryPolicyReportAnalyzer:
                     continue
 
                 if in_column:
-                    if height > self.most_height:
+                    if height > min(14, self.most_height) and self.check_chinese(content) and "数据来源" not in content:
                         in_column = False
+
+                        if not (in_table or in_figure or in_column):
+                            if re.match('专栏 \\d+ ', content):
+                                in_column = True
+                                columns.append(ind)
+
+                            elif re.match('表 \\d+ ', content):
+                                in_table = True
+                                tables.append(ind)
+                                match_table_ending = False
+
+                            elif re.match('数据来源：[^。]+?。', content):
+                                figures.append(ind)
+
+                                if not re.match('.+?图 \\d+ ', content):
+                                    in_figure = True
+
                     else:
                         columns.append(ind)
                     continue
@@ -190,8 +209,25 @@ class MonetaryPolicyReportAnalyzer:
                         tables.append(ind)
                         continue
 
-                    if match_table_ending and height > self.most_height:
+                    if match_table_ending and height > min(14, self.most_height) and self.check_chinese(content):
                         in_table = False
+
+                        if not (in_table or in_figure or in_column):
+                            if re.match('专栏 \\d+ ', content):
+                                in_column = True
+                                columns.append(ind)
+
+                            elif re.match('表 \\d+ ', content):
+                                in_table = True
+                                tables.append(ind)
+                                match_table_ending = False
+
+                            elif re.match('数据来源：[^。]+?。', content):
+                                figures.append(ind)
+
+                                if not re.match('.+?图 \\d+ ', content):
+                                    in_figure = True
+
                     else:
                         if re.match('表 \\d+ {2}', content):
                             match_table_ending = False
@@ -201,6 +237,23 @@ class MonetaryPolicyReportAnalyzer:
                 if in_figure:
                     if re.match('图 \\d+ {2}', content):
                         in_figure = False
+
+                        if not (in_table or in_figure or in_column):
+                            if re.match('专栏 \\d+ ', content):
+                                in_column = True
+                                columns.append(ind)
+
+                            elif re.match('表 \\d+ ', content):
+                                in_table = True
+                                tables.append(ind)
+                                match_table_ending = False
+
+                            elif re.match('数据来源：[^。]+?。', content):
+                                figures.append(ind)
+
+                                if not re.match('.+?图 \\d+ ', content):
+                                    in_figure = True
+
                     figures.append(ind)
                     continue
 
@@ -208,6 +261,12 @@ class MonetaryPolicyReportAnalyzer:
             pages_dict[page_index] = cache
 
         return pages_dict
+
+    def check_chinese(self, text):
+        if re.search("[\u4e00-\u9fa5]", text):
+            return True
+
+        return False
 
     def merge_continuous_paragraph(self, pages_dict):
         for page_index, page_content in pages_dict.items():
@@ -533,6 +592,85 @@ class PDFComparer:
 
         return ops_a, ops_b
 
+    def to_markdown(self, output_path):
+        if self.pdfs.target is None:
+            raise AttributeError("haven't call compare_two_pdf interface.")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            title1, title2 = "", ""
+            for item in self.pdfs.title_alignment[0]:
+                title1 += item[1]
+            for item in self.pdfs.title_alignment[1]:
+                title2 += item[1]
+            self.write_to_line(f, title1, title2)
+
+            self.write_to_line(f, "----", "----")
+
+            if self.pdfs.paragraphs_alignment:
+                for aligned_para in self.pdfs.paragraphs_alignment:
+                    cache1, cache2 = "", ""
+                    for aligned_sent in aligned_para:
+                        cache1 += self.decorate(aligned_sent[0], True) + "。" if self.decorate(aligned_sent[0], True) else ""
+                        cache2 += self.decorate(aligned_sent[1], False) + "。" if self.decorate(aligned_sent[1], False) else ""
+
+                    self.write_to_line(f, cache1, cache2)
+
+            if self.pdfs.children_alignment:
+                for aligned_child in self.pdfs.children_alignment:
+                    self.node_to_markdown(f, aligned_child)
+
+    def node_to_markdown(self, f, index_pair_node):
+        if index_pair_node.title_alignment:
+            str1 = self.decorate(index_pair_node.title_alignment[0], True)
+            str2 = self.decorate(index_pair_node.title_alignment[1], False)
+            self.write_to_line(f, str1, str2)
+
+        if index_pair_node.paragraphs_alignment:
+            for aligned_para in index_pair_node.paragraphs_alignment:
+                cache1, cache2 = "", ""
+                for aligned_sent in aligned_para:
+                    cache1 += self.decorate(aligned_sent[0], True) + "。" if self.decorate(aligned_sent[0], True) else ""
+                    cache2 += self.decorate(aligned_sent[1], False) + "。" if self.decorate(aligned_sent[1], False) else ""
+
+                self.write_to_line(f, cache1, cache2)
+
+        if index_pair_node.children_alignment:
+            for aligned_child in index_pair_node.children_alignment:
+                self.node_to_markdown(f, aligned_child)
+
+    def write_to_line(self, f, str1, str2):
+        f.write("|" + str1 + "|" + str2 + "|" + "\n")
+
+    def decorate(self, ops, source, delete_color="#FF69B4", insert_color="#008000"):
+        string = ""
+
+        for op in ops:
+            name = op[0]
+            text = op[1]
+
+            if name == "equal":
+                string += text
+
+            elif name == "replace":
+                if source:
+                    text = ("<font color=%s>" % delete_color) + text + "</font>"
+                else:
+                    text = ("<font color=%s>" % insert_color) + text + "</font>"
+                string += text
+
+            elif name == "delete":
+                text = ("<font color=%s>" % delete_color) + text + "</font>"
+                string += text
+
+            elif name == "insert":
+                text = ("<font color=%s>" % insert_color) + text + "</font>"
+                string += text
+
+            else:
+                string += text
+
+        return string
+
 
 class IndexPairNode:
     def __init__(self):
@@ -540,6 +678,444 @@ class IndexPairNode:
         self.title_alignment = None
         self.paragraphs_alignment = None
         self.children_alignment = None
+
+
+def markdown_to_html(input_path, output_path):
+    input_file = codecs.open(input_path, mode="r", encoding="utf-8")
+    text = input_file.read()
+
+    html = markdown.markdown(text, extensions=['markdown.extensions.tables'])
+    css = \
+        """
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+        <style type="text/css">
+            body{
+                margin: 0 auto;
+                font-family: "Microsoft YaHei", arial,sans-serif;
+                color: #444444;
+                line-height: 1;
+                padding: 30px;
+            }
+            @media screen and (min-width: 768px) {
+                body {
+                    width: 748px;
+                    margin: 10px auto;
+                }
+            }
+            h1, h2, h3, h4 {
+                color: #111111;
+                font-weight: 400;
+                margin-top: 1em;
+            }
+            
+            h1, h2, h3, h4, h5 {
+                font-family: Georgia, Palatino, serif;
+            }
+            h1, h2, h3, h4, h5, p , dl{
+                margin-bottom: 16px;
+                padding: 0;
+            }
+            h1 {
+                font-size: 48px;
+                line-height: 54px;
+            }
+            h2 {
+                font-size: 36px;
+                line-height: 42px;
+            }
+            h1, h2 {
+                border-bottom: 1px solid #EFEAEA;
+                padding-bottom: 10px;
+            }
+            h3 {
+                font-size: 24px;
+                line-height: 30px;
+            }
+            h4 {
+                font-size: 21px;
+                line-height: 26px;
+            }
+            h5 {
+                font-size: 18px;
+                list-style: 23px;
+            }
+            a {
+                color: #0099ff;
+                margin: 0;
+                padding: 0;
+                vertical-align: baseline;
+            }
+            a:hover {
+                text-decoration: none;
+                color: #ff6600;
+            }
+            a:visited {
+                /*color: purple;*/
+            }
+            ul, ol {
+                padding: 0;
+                padding-left: 24px;
+                margin: 0;
+            }
+            li {
+                line-height: 24px;
+            }
+            p, ul, ol {
+                font-size: 16px;
+                line-height: 24px;
+            }
+            
+            ol ol, ul ol {
+                list-style-type: lower-roman;
+            }
+            
+            /*pre {
+                padding: 0px 24px;
+                max-width: 800px;
+                white-space: pre-wrap;
+            }
+            code {
+                font-family: Consolas, Monaco, Andale Mono, monospace;
+                line-height: 1.5;
+                font-size: 13px;
+            }*/
+            
+            code, pre {
+                border-radius: 3px;
+                background-color:#f7f7f7;
+                color: inherit;
+            }
+            
+            code {
+                font-family: Consolas, Monaco, Andale Mono, monospace;
+                margin: 0 2px;
+            }
+            
+            pre {
+                line-height: 1.7em;
+                overflow: auto;
+                padding: 6px 10px;
+                border-left: 5px solid #6CE26C;
+            }
+            
+            pre > code {
+                border: 0;
+                display: inline;
+                max-width: initial;
+                padding: 0;
+                margin: 0;
+                overflow: initial;
+                line-height: inherit;
+                font-size: .85em;
+                white-space: pre;
+                background: 0 0;
+            
+            }
+            
+            code {
+                color: #666555;
+            }
+            
+            
+            /** markdown preview plus 对于代码块的处理有些问题, 所以使用统一的颜色 */
+            /*code .keyword {
+              color: #8959a8;
+            }
+            
+            code .number {
+              color: #f5871f;
+            }
+            
+            code .comment {
+              color: #998
+            }*/
+            
+            aside {
+                display: block;
+                float: right;
+                width: 390px;
+            }
+            blockquote {
+                border-left:.5em solid #eee;
+                padding: 0 0 0 2em;
+                margin-left:0;
+            }
+            blockquote  cite {
+                font-size:14px;
+                line-height:20px;
+                color:#bfbfbf;
+            }
+            blockquote cite:before {
+                content: '\2014 \00A0';
+            }
+            
+            blockquote p {
+                color: #666;
+            }
+            hr {
+                text-align: left;
+                color: #999;
+                height: 2px;
+                padding: 0;
+                margin: 16px 0;
+                background-color: #e7e7e7;
+                border: 0 none;
+            }
+            
+            dl {
+                padding: 0;
+            }
+            
+            dl dt {
+                padding: 10px 0;
+                margin-top: 16px;
+                font-size: 1em;
+                font-style: italic;
+                font-weight: bold;
+            }
+            
+            dl dd {
+                padding: 0 16px;
+                margin-bottom: 16px;
+            }
+            
+            dd {
+                margin-left: 0;
+            }
+            
+            /* Code below this line is copyright Twitter Inc. */
+            
+            button,
+            input,
+            select,
+            textarea {
+                font-size: 100%;
+                margin: 0;
+                vertical-align: baseline;
+                *vertical-align: middle;
+            }
+            button, input {
+                line-height: normal;
+                *overflow: visible;
+            }
+            button::-moz-focus-inner, input::-moz-focus-inner {
+                border: 0;
+                padding: 0;
+            }
+            button,
+            input[type="button"],
+            input[type="reset"],
+            input[type="submit"] {
+                cursor: pointer;
+                -webkit-appearance: button;
+            }
+            input[type=checkbox], input[type=radio] {
+                cursor: pointer;
+            }
+            /* override default chrome & firefox settings */
+            input:not([type="image"]), textarea {
+                -webkit-box-sizing: content-box;
+                -moz-box-sizing: content-box;
+                box-sizing: content-box;
+            }
+            
+            input[type="search"] {
+                -webkit-appearance: textfield;
+                -webkit-box-sizing: content-box;
+                -moz-box-sizing: content-box;
+                box-sizing: content-box;
+            }
+            input[type="search"]::-webkit-search-decoration {
+                -webkit-appearance: none;
+            }
+            label,
+            input,
+            select,
+            textarea {
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 13px;
+                font-weight: normal;
+                line-height: normal;
+                margin-bottom: 18px;
+            }
+            input[type=checkbox], input[type=radio] {
+                cursor: pointer;
+                margin-bottom: 0;
+            }
+            input[type=text],
+            input[type=password],
+            textarea,
+            select {
+                display: inline-block;
+                width: 210px;
+                padding: 4px;
+                font-size: 13px;
+                font-weight: normal;
+                line-height: 18px;
+                height: 18px;
+                color: #808080;
+                border: 1px solid #ccc;
+                -webkit-border-radius: 3px;
+                -moz-border-radius: 3px;
+                border-radius: 3px;
+            }
+            select, input[type=file] {
+                height: 27px;
+                line-height: 27px;
+            }
+            textarea {
+                height: auto;
+            }
+            /* grey out placeholders */
+            :-moz-placeholder {
+                color: #bfbfbf;
+            }
+            ::-webkit-input-placeholder {
+                color: #bfbfbf;
+            }
+            input[type=text],
+            input[type=password],
+            select,
+            textarea {
+                -webkit-transition: border linear 0.2s, box-shadow linear 0.2s;
+                -moz-transition: border linear 0.2s, box-shadow linear 0.2s;
+                transition: border linear 0.2s, box-shadow linear 0.2s;
+                -webkit-box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+                -moz-box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+                box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+            }
+            input[type=text]:focus, input[type=password]:focus, textarea:focus {
+                outline: none;
+                border-color: rgba(82, 168, 236, 0.8);
+                -webkit-box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), 0 0 8px rgba(82, 168, 236, 0.6);
+                -moz-box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), 0 0 8px rgba(82, 168, 236, 0.6);
+                box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1), 0 0 8px rgba(82, 168, 236, 0.6);
+            }
+            /* buttons */
+            button {
+                display: inline-block;
+                padding: 4px 14px;
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 13px;
+                line-height: 18px;
+                -webkit-border-radius: 4px;
+                -moz-border-radius: 4px;
+                border-radius: 4px;
+                -webkit-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(0, 0, 0, 0.05);
+                -moz-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(0, 0, 0, 0.05);
+                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(0, 0, 0, 0.05);
+                background-color: #0064cd;
+                background-repeat: repeat-x;
+                background-image: -khtml-gradient(linear, left top, left bottom, from(#049cdb), to(#0064cd));
+                background-image: -moz-linear-gradient(top, #049cdb, #0064cd);
+                background-image: -ms-linear-gradient(top, #049cdb, #0064cd);
+                background-image: -webkit-gradient(linear, left top, left bottom, color-stop(0%, #049cdb), color-stop(100%, #0064cd));
+                background-image: -webkit-linear-gradient(top, #049cdb, #0064cd);
+                background-image: -o-linear-gradient(top, #049cdb, #0064cd);
+                background-image: linear-gradient(top, #049cdb, #0064cd);
+                color: #fff;
+                text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.25);
+                border: 1px solid #004b9a;
+                border-bottom-color: #003f81;
+                -webkit-transition: 0.1s linear all;
+                -moz-transition: 0.1s linear all;
+                transition: 0.1s linear all;
+                border-color: #0064cd #0064cd #003f81;
+                border-color: rgba(0, 0, 0, 0.1) rgba(0, 0, 0, 0.1) rgba(0, 0, 0, 0.25);
+            }
+            button:hover {
+                color: #fff;
+                background-position: 0 -15px;
+                text-decoration: none;
+            }
+            button:active {
+                -webkit-box-shadow: inset 0 3px 7px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.05);
+                -moz-box-shadow: inset 0 3px 7px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.05);
+                box-shadow: inset 0 3px 7px rgba(0, 0, 0, 0.15), 0 1px 2px rgba(0, 0, 0, 0.05);
+            }
+            button::-moz-focus-inner {
+                padding: 0;
+                border: 0;
+            }
+            table {
+                *border-collapse: collapse; /* IE7 and lower */
+                border-spacing: 0;
+                width: 100%;
+            }
+            table {
+                border: solid #ccc 1px;
+                -moz-border-radius: 6px;
+                -webkit-border-radius: 6px;
+                border-radius: 6px;
+                /*-webkit-box-shadow: 0 1px 1px #ccc;
+                -moz-box-shadow: 0 1px 1px #ccc;
+                box-shadow: 0 1px 1px #ccc;   */
+            }
+            table tr:hover {
+                background: #fbf8e9;
+                -o-transition: all 0.1s ease-in-out;
+                -webkit-transition: all 0.1s ease-in-out;
+                -moz-transition: all 0.1s ease-in-out;
+                -ms-transition: all 0.1s ease-in-out;
+                transition: all 0.1s ease-in-out;
+            }
+            table td, .table th {
+                border-left: 1px solid #ccc;
+                border-top: 1px solid #ccc;
+                padding: 10px;
+                text-align: left;
+            }
+            
+            table th {
+                background-color: #dce9f9;
+                background-image: -webkit-gradient(linear, left top, left bottom, from(#ebf3fc), to(#dce9f9));
+                background-image: -webkit-linear-gradient(top, #ebf3fc, #dce9f9);
+                background-image:    -moz-linear-gradient(top, #ebf3fc, #dce9f9);
+                background-image:     -ms-linear-gradient(top, #ebf3fc, #dce9f9);
+                background-image:      -o-linear-gradient(top, #ebf3fc, #dce9f9);
+                background-image:         linear-gradient(top, #ebf3fc, #dce9f9);
+                /*-webkit-box-shadow: 0 1px 0 rgba(255,255,255,.8) inset;
+                -moz-box-shadow:0 1px 0 rgba(255,255,255,.8) inset;
+                box-shadow: 0 1px 0 rgba(255,255,255,.8) inset;*/
+                border-top: none;
+                text-shadow: 0 1px 0 rgba(255,255,255,.5);
+                padding: 5px;
+            }
+            
+            table td:first-child, table th:first-child {
+                border-left: none;
+            }
+            
+            table th:first-child {
+                -moz-border-radius: 6px 0 0 0;
+                -webkit-border-radius: 6px 0 0 0;
+                border-radius: 6px 0 0 0;
+            }
+            table th:last-child {
+                -moz-border-radius: 0 6px 0 0;
+                -webkit-border-radius: 0 6px 0 0;
+                border-radius: 0 6px 0 0;
+            }
+            table th:only-child{
+                -moz-border-radius: 6px 6px 0 0;
+                -webkit-border-radius: 6px 6px 0 0;
+                border-radius: 6px 6px 0 0;
+            }
+            table tr:last-child td:first-child {
+                -moz-border-radius: 0 0 0 6px;
+                -webkit-border-radius: 0 0 0 6px;
+                border-radius: 0 0 0 6px;
+            }
+            table tr:last-child td:last-child {
+                -moz-border-radius: 0 0 6px 0;
+                -webkit-border-radius: 0 0 6px 0;
+                border-radius: 0 0 6px 0;
+            }
+        </style>
+        """
+
+    output_file = codecs.open(output_path, mode="w", encoding="utf-8")
+    output_file.write(css + html)
 
 
 def main():
@@ -553,9 +1129,12 @@ def main():
     #
     # document = agent.analyze("Monetary Policy Report", parse_result)
     # print(document)
-    agent = PDFComparer()
-    result = agent.compare_two_pdf("../Resources/2020Q1.pdf", "../Resources/2020Q2.pdf", "Monetary Policy Report")
-    print(result)
+    # agent = PDFComparer()
+    # result = agent.compare_two_pdf("../Resources/2020Q1.pdf", "../Resources/2020Q2.pdf", "Monetary Policy Report")
+    # print(result)
+    # agent.to_markdown("result.md")
+
+    markdown_to_html("result.md", "result.html")
 
 
 if __name__ == '__main__':
