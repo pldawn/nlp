@@ -351,7 +351,7 @@ class MonetaryPolicyReportAnalyzer:
         parent_stack = [('root', root_node)]
 
         for (page_index, x0s, height, content) in plain_text:
-            index_token = self.get_index_token(content)
+            index_token = self.get_index_token(content.replace(" ", ""))
 
             if len(content) <= self.title_max_length and index_token is not None:
                 new_node = IndexNode()
@@ -377,7 +377,7 @@ class MonetaryPolicyReportAnalyzer:
                     parent_stack.append((index_token, new_node))
 
             else:
-                parent_stack[-1][1].paragraphs.append(content)
+                parent_stack[-1][1].paragraphs.append(content.replace(" ", ""))
 
         return root_node
 
@@ -449,7 +449,7 @@ class PDFComparer:
         else:
             title_a = [child.title for child in children_a]
             title_b = [child.title for child in children_b]
-            alignment_title = self.align_text_list(title_a, title_b)
+            alignment_title = self.align_text_list_for_children(title_a, title_b)
 
             for aligned in alignment_title:
                 node_a = children_a[title_a.index(aligned[0])] if aligned[0] else IndexNode()
@@ -461,14 +461,9 @@ class PDFComparer:
         return alignment
 
     def align_paragraphs(self, index_pair_node):
-        paragraphs_a = [re.split("[。？！]", i) for i in index_pair_node.target[0].paragraphs]
-        paragraphs_b = [re.split("[。？！]", i) for i in index_pair_node.target[1].paragraphs]
+        paragraphs_a = index_pair_node.target[0].paragraphs
+        paragraphs_b = index_pair_node.target[1].paragraphs
         alignment = []
-
-        for ind in range(len(paragraphs_a)):
-            paragraphs_a[ind] = [i for i in paragraphs_a[ind] if i]
-        for ind in range(len(paragraphs_b)):
-            paragraphs_b[ind] = [i for i in paragraphs_b[ind] if i]
 
         if not paragraphs_a and not paragraphs_b:
 
@@ -476,37 +471,66 @@ class PDFComparer:
 
         elif not paragraphs_a and paragraphs_b:
             for para in paragraphs_b:
-                cache = []
-                for sent in para:
-                    cache.append(([], [("insert", sent)]))
-                alignment.append(cache)
+                alignment.append(([], [("insert", para)]))
 
         elif paragraphs_a and not paragraphs_b:
             for para in paragraphs_a:
-                cache = []
-                for sent in para:
-                    cache.append((["delete", sent], []))
-                alignment.append(cache)
+                alignment.append(([("delete", para)], []))
 
         else:
-            paragraphs_a = ["。".join(sents) for sents in paragraphs_a]
-            paragraphs_b = ["。".join(sents) for sents in paragraphs_b]
-            alignment = self.align_text_list(paragraphs_a, paragraphs_b)
+            alignment_cache = self.align_text_list_for_paragraphs(paragraphs_a, paragraphs_b)
 
-            for ind in range(len(alignment)):
-                aligned = alignment[ind]
-                sent_list_a = aligned[0].split("。") if aligned[0] else []
-                sent_list_b = aligned[1].split("。") if aligned[1] else []
-                alignment_sents = self.align_text_list(sent_list_a, sent_list_b)
+            for ind in range(len(alignment_cache)):
+                aligned = alignment_cache[ind]
+                sent_list_a = re.split("\\W", paragraphs_a[aligned[0]]) if aligned[0] != 100 else []
+                punc_list_a = re.split("\\w", paragraphs_a[aligned[0]])[1:-1] if aligned[0] != 100 else []
+                punc_list_a = [i for i in punc_list_a if i]
+                sent_list_b = re.split("\\W", paragraphs_b[aligned[1]]) if aligned[1] != 100 else []
+                punc_list_b = re.split("\\w", paragraphs_b[aligned[1]])[1:-1] if aligned[1] != 100 else []
+                punc_list_b = [i for i in punc_list_b if i]
+                alignment_sents = self.align_text_list_for_paragraphs(sent_list_a, sent_list_b)
 
+                alignment_ops = []
                 for i in range(len(alignment_sents)):
-                    alignment_sents[i] = (self.edit_ops(alignment_sents[i][0], alignment_sents[i][1]))
+                    text_a = sent_list_a[alignment_sents[i][0]] if alignment_sents[i][0] != 100 else ""
+                    text_b = sent_list_b[alignment_sents[i][1]] if alignment_sents[i][1] != 100 else ""
+                    alignment_ops.append((self.edit_ops(text_a, text_b)))
 
-                alignment[ind] = alignment_sents
+                char_ops_a, char_ops_b = [], []
+                for j in range(len(alignment_ops)):
+                    if alignment_ops[j][0]:
+                        char_ops_a.append((alignment_sents[j][0], alignment_ops[j][0]))
+                    if alignment_ops[j][1]:
+                        char_ops_b.append((alignment_sents[j][1], alignment_ops[j][1]))
+
+                char_ops_a.sort(key=lambda x: x[0])
+                char_ops_b.sort(key=lambda x: x[0])
+
+                assert(len(char_ops_a) == 1 + len(punc_list_a) or (len(char_ops_a) == 0 and len(punc_list_a) == 0))
+                assert(len(char_ops_b) == 1 + len(punc_list_b) or (len(char_ops_b) == 0 and len(punc_list_b) == 0))
+
+                ops_a, ops_b = [], []
+                for i in range(len(char_ops_a)):
+                    ops_a.append(char_ops_a[i][1])
+                    if i < len(char_ops_a) - 1:
+                        ops_a.append([("equal", punc_list_a[i])])
+
+                for j in range(len(char_ops_b)):
+                    ops_b.append(char_ops_b[j][1])
+                    if j < len(char_ops_b) - 1:
+                        ops_b.append([("equal", punc_list_b[j])])
+
+                res_a, res_b = [], []
+                for i in ops_a:
+                    res_a += i
+                for j in ops_b:
+                    res_b += j
+
+                alignment.append((res_a, res_b))
 
         return alignment
 
-    def align_text_list(self, list_a, list_b):
+    def align_text_list_for_children(self, list_a, list_b):
         distances = []
 
         for ind_a in range(len(list_a)):
@@ -516,11 +540,11 @@ class PDFComparer:
                 dist = edit.distance(str_a, str_b) / ((len(str_a) + len(str_b)) / 2)
                 distances.append((ind_a, ind_b, dist))
 
-        alignment = self.align_distances(distances, list_a, list_b)
+        alignment = self.align_distances_for_children(distances, list_a, list_b)
 
         return alignment
 
-    def align_distances(self, distances, list_a, list_b, start_a=0, start_b=0):
+    def align_distances_for_children(self, distances, list_a, list_b, start_a=0, start_b=0):
         alignment = []
         alignment_cache = []
 
@@ -548,8 +572,8 @@ class PDFComparer:
         distances_left = [item for item in distances if item[0] < aligned[0] and item[1] < aligned[1]]
         distances_right = [item for item in distances if item[0] > aligned[0] and item[1] > aligned[1]]
 
-        alignment_left = self.align_distances(distances_left, list_a_left, list_b_left, start_a, start_b)
-        alignment_right = self.align_distances(distances_right, list_a_right, list_b_right, aligned[0] + 1, aligned[1] + 1)
+        alignment_left = self.align_distances_for_children(distances_left, list_a_left, list_b_left, start_a, start_b)
+        alignment_right = self.align_distances_for_children(distances_right, list_a_right, list_b_right, aligned[0] + 1, aligned[1] + 1)
         alignment_cache = alignment_left + alignment_cache + alignment_right
 
         for item in alignment_cache:
@@ -560,6 +584,73 @@ class PDFComparer:
             else:
                 alignment.append((item[0], ""))
                 alignment.append(("", item[1]))
+
+        return alignment
+
+    def align_text_list_for_paragraphs(self, list_a, list_b):
+        distances = []
+
+        for ind_a in range(len(list_a)):
+            str_a = list_a[ind_a]
+            first_a = str_a.split("。")[0]
+            for ind_b in range(len(list_b)):
+                str_b = list_b[ind_b]
+                first_b = str_b.split("。")[0]
+                try:
+                    dist1 = edit.distance(str_a, str_b) / ((len(str_a) + len(str_b)) / 2)
+                    dist2 = edit.distance(first_a, first_b) / ((len(first_a) + len(first_b)) / 2)
+                    dist = min(dist1, dist2)
+                except ZeroDivisionError:
+                    dist = 0
+                distances.append((ind_a, ind_b, dist))
+
+        alignment = self.align_distances_for_paragraphs(distances, list_a, list_b)
+
+        for ind in range(len(list_a)):
+            not_in = True
+            for item in alignment:
+                if ind == item[0]:
+                    not_in = False
+            if not_in:
+                alignment.append((ind, 100))
+
+        for ind in range(len(list_b)):
+            not_in = True
+            for item in alignment:
+                if ind == item[1]:
+                    not_in = False
+            if not_in:
+                alignment.append((100, ind))
+
+        alignment.sort(key=lambda x: x[0])
+        alignment.sort(key=lambda x: x[1])
+
+        return alignment
+
+    def align_distances_for_paragraphs(self, distances, list_a, list_b):
+        alignment = []
+        alignment_cache = []
+
+        if not distances:
+            return alignment
+
+        distances.sort(key=lambda x: x[-1])
+        aligned = distances[0]
+        ind_a = aligned[0]
+        ind_b = aligned[1]
+
+        alignment_cache.append((ind_a, ind_b, aligned[-1]))
+        distances = [item for item in distances if item[0] != ind_a and item[1] != ind_b]
+        alignment_cache = alignment_cache + self.align_distances_for_paragraphs(distances, list_a, list_b)
+
+        for item in alignment_cache:
+            if len(item) == 2:
+                alignment.append(item)
+            elif item[-1] <= 1:
+                alignment.append((item[0], item[1]))
+            else:
+                alignment.append((item[0], 100))
+                alignment.append((100, item[1]))
 
         return alignment
 
@@ -585,12 +676,34 @@ class PDFComparer:
             slice_a = text_a[op[1]: op[2]]
             slice_b = text_b[op[3]: op[4]]
 
+            if self.is_numerical(slice_a) and self.is_numerical(slice_b):
+                op_name = "equal"
+
             if slice_a:
                 ops_a.append((op_name, slice_a))
             if slice_b:
                 ops_b.append((op_name, slice_b))
 
         return ops_a, ops_b
+
+    def to_markdown_based_frame(self, output_path):
+        # if self.pdfs.target is None:
+        #     raise AttributeError("haven't call compare_two_pdf interface.")
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("<table>\n")
+
+            title1, title2 =  "一季度", "二季度" # "", ""
+            # for item in self.pdfs.title_alignment[0]:
+            #     title1 += item[1]
+            # for item in self.pdfs.title_alignment[1]:
+            #     title2 += item[1]
+            self.write_to_frame(f, "项目", "", title1, title2)
+            self.write_to_frame(f, "总体基调", "", "好", "坏")
+            self.write_to_frame(f, "政策展望", "流动性", "A", "B", 2)
+            self.write_to_frame(f, "", "风险", "A<br>C", "B")
+
+            f.write("</table>\n")
 
     def to_markdown(self, output_path):
         if self.pdfs.target is None:
@@ -608,12 +721,10 @@ class PDFComparer:
 
             if self.pdfs.paragraphs_alignment:
                 for aligned_para in self.pdfs.paragraphs_alignment:
-                    cache1, cache2 = "", ""
-                    for aligned_sent in aligned_para:
-                        cache1 += self.decorate(aligned_sent[0], True) + "。" if self.decorate(aligned_sent[0], True) else ""
-                        cache2 += self.decorate(aligned_sent[1], False) + "。" if self.decorate(aligned_sent[1], False) else ""
+                    str1 = self.decorate(aligned_para[0], True) + "。" if self.decorate(aligned_para[0], True) else ""
+                    str2 = self.decorate(aligned_para[1], False) + "。" if self.decorate(aligned_para[1], False) else ""
 
-                    self.write_to_line(f, cache1, cache2)
+                    self.write_to_line(f, str1, str2)
 
             if self.pdfs.children_alignment:
                 for aligned_child in self.pdfs.children_alignment:
@@ -627,23 +738,52 @@ class PDFComparer:
 
         if index_pair_node.paragraphs_alignment:
             for aligned_para in index_pair_node.paragraphs_alignment:
-                cache1, cache2 = "", ""
-                for aligned_sent in aligned_para:
-                    cache1 += self.decorate(aligned_sent[0], True) + "。" if self.decorate(aligned_sent[0], True) else ""
-                    cache2 += self.decorate(aligned_sent[1], False) + "。" if self.decorate(aligned_sent[1], False) else ""
+                str1 = self.decorate(aligned_para[0], True) + "。" if self.decorate(aligned_para[0], True) else ""
+                str2 = self.decorate(aligned_para[1], False) + "。" if self.decorate(aligned_para[1], False) else ""
 
-                self.write_to_line(f, cache1, cache2)
+                self.write_to_line(f, str1, str2)
 
         if index_pair_node.children_alignment:
             for aligned_child in index_pair_node.children_alignment:
                 self.node_to_markdown(f, aligned_child)
+
+    def write_to_frame(self, f, str1, str2, str3, str4, rowspan1=1, rowspan2=1):
+        if str1 and str2 and str3 and str4:
+            f.write(" <tr>\n")
+            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan1, str1))
+            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan2, str2))
+            f.write("  <td>%s</td>\n" % str3)
+            f.write("  <td>%s</td>\n" % str4)
+            f.write(" </tr>\n")
+
+        elif str1 and not str2 and str3 and str4:
+            f.write(" <tr>\n")
+            f.write("  <td colspan='2'>%s</td>\n" % str1)
+            f.write("  <td>%s</td>\n" % str3)
+            f.write("  <td>%s</td>\n" % str4)
+            f.write(" </tr>\n")
+
+        elif not str1 and str2 and str3 and str4:
+            f.write(" <tr>\n")
+            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan2, str2))
+            f.write("  <td>%s</td>\n" % str3)
+            f.write("  <td>%s</td>\n" % str4)
+            f.write(" </tr>\n")
+
+        elif not str1 and not str2 and str3 and str4:
+            f.write(" <tr>\n")
+            f.write("  <td>%s</td>\n" % str3)
+            f.write("  <td>%s</td>\n" % str4)
+            f.write(" </tr>\n")
+
+        else:
+            raise ValueError("write_to_frame")
 
     def write_to_line(self, f, str1, str2):
         f.write("|" + str1 + "|" + str2 + "|" + "\n")
 
     def decorate(self, ops, source, delete_color="#FF69B4", insert_color="#008000"):
         string = ""
-
         for op in ops:
             name = op[0]
             text = op[1]
@@ -670,6 +810,13 @@ class PDFComparer:
                 string += text
 
         return string
+
+    def is_numerical(self, text):
+        try:
+            float(text)
+            return True
+        except ValueError:
+            return False
 
 
 class IndexPairNode:
@@ -1129,12 +1276,11 @@ def main():
     #
     # document = agent.analyze("Monetary Policy Report", parse_result)
     # print(document)
-    # agent = PDFComparer()
+    agent = PDFComparer()
     # result = agent.compare_two_pdf("../Resources/2020Q1.pdf", "../Resources/2020Q2.pdf", "Monetary Policy Report")
-    # print(result)
     # agent.to_markdown("result.md")
-
-    markdown_to_html("result.md", "result.html")
+    # markdown_to_html("result.md", "result.html")
+    agent.to_markdown_based_frame("result_frame.md")
 
 
 if __name__ == '__main__':
