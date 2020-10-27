@@ -686,24 +686,122 @@ class PDFComparer:
 
         return ops_a, ops_b
 
-    def to_markdown_based_frame(self, output_path):
+    def to_html_based_frame(self, output_path):
         # if self.pdfs.target is None:
         #     raise AttributeError("haven't call compare_two_pdf interface.")
 
         with open(output_path, "w", encoding="utf-8") as f:
+            css = \
+                """
+                <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+                <style type="text/css">
+                    body{
+                        margin: 0 auto;
+                        font-family: "Microsoft YaHei", arial,sans-serif;
+                        color: #444444;
+                        line-height: 1;
+                        padding: 30px;
+                    }
+                    
+                    @media screen and (min-width: 768px) {
+                        body {
+                            width: 1500px;
+                            margin: 10px auto;
+                        }
+                    }
+
+                    table {
+                        border-spacing: 0;
+                        width: 100%;
+                    }
+                    
+                    table {
+                        border: solid #ccc 5px;
+                        border-radius: 6px;
+                    }
+                    
+                    table td {
+                        border-left: 1px solid #ccc;
+                        border-top: 1px solid #ccc;
+                        padding: 10px;
+                    }
+
+                    table th {
+                        border: 1px solid #ccc;
+                        background-color: #dce9f9;
+                        text-shadow: 0 1px 0 rgba(255,255,255,.5);
+                        padding: 5px;
+                    }
+                    
+                    table th:first-child {
+                        width: 10%;
+                    }
+                </style>
+                """
+            f.write(css + "\n")
             f.write("<table>\n")
 
-            title1, title2 =  "一季度", "二季度" # "", ""
+            title1, title2 = "一季度", "二季度"  # "", ""
             # for item in self.pdfs.title_alignment[0]:
             #     title1 += item[1]
             # for item in self.pdfs.title_alignment[1]:
             #     title2 += item[1]
-            self.write_to_frame(f, "项目", "", title1, title2)
+            self.write_to_frame(f, "项目", "", title1, title2, header=True)
             self.write_to_frame(f, "总体基调", "", "好", "坏")
-            self.write_to_frame(f, "政策展望", "流动性", "A", "B", 2)
+            self.write_to_frame(f, "政策展望", "流动性", "<font color=#00FF00>A</font>", "B", 3)
             self.write_to_frame(f, "", "风险", "A<br>C", "B")
+            self.write_to_frame(f, "", "收益", "A", "B")
 
             f.write("</table>\n")
+
+    def find_content(self, tree, path):
+        # path = [[c1], [c2], [t], [p1s1s2, p2]]
+        result = [tree]
+        cache = []
+
+        while path:
+            route = path.pop(0)
+            for ind in range(len(result)):
+                tree = result[ind]
+
+                for r in route:
+                    if r.startswith("c"):
+                        index = int(r[1:]) - 1
+                        position = tree.children[index]
+                        cache.append(position)
+                    elif r.startswith("t"):
+                        position = tree.title
+                        head = position[:4]
+                        if "、" in head:
+                            start = head.index("、") + 1
+                        elif "）" in head:
+                            start = head.index("）") + 1
+                        elif "." in head:
+                            start = head.index(".") + 1
+                        else:
+                            start = 0
+                        position = position[start:]
+                        cache.append(position + "。")
+                    elif r.startswith("p"):
+                        if "s" in r:
+                            first_s = r.index("s")
+                            index = int(r[1:first_s]) - 1
+                            sents = r[first_s+1:].split("s")
+                            paragraphs = re.split("[。？！]", tree.paragraphs[index])
+                            for s in sents:
+                                position = paragraphs[int(s) - 1]
+                                cache.append(position + "。")
+                        else:
+                            index = int(route[1:]) - 1
+                            position = tree.paragraphs[index]
+                            cache.append(position + "。")
+                    else:
+                        raise ValueError("find_content")
+
+            result = cache
+            cache = []
+
+        return result
 
     def to_markdown(self, output_path):
         if self.pdfs.target is None:
@@ -747,25 +845,32 @@ class PDFComparer:
             for aligned_child in index_pair_node.children_alignment:
                 self.node_to_markdown(f, aligned_child)
 
-    def write_to_frame(self, f, str1, str2, str3, str4, rowspan1=1, rowspan2=1):
+    def write_to_frame(self, f, str1, str2, str3, str4, rowspan1=1, rowspan2=1, header=False):
         if str1 and str2 and str3 and str4:
             f.write(" <tr>\n")
-            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan1, str1))
-            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan2, str2))
+            f.write("  <th rowspan='%s'>%s</th>\n" % (rowspan1, str1))
+            f.write("  <th rowspan='%s'>%s</th>\n" % (rowspan2, str2))
             f.write("  <td>%s</td>\n" % str3)
             f.write("  <td>%s</td>\n" % str4)
             f.write(" </tr>\n")
 
         elif str1 and not str2 and str3 and str4:
-            f.write(" <tr>\n")
-            f.write("  <td colspan='2'>%s</td>\n" % str1)
-            f.write("  <td>%s</td>\n" % str3)
-            f.write("  <td>%s</td>\n" % str4)
-            f.write(" </tr>\n")
+            if header:
+                f.write(" <tr>\n")
+                f.write("  <th colspan='2'>%s</th>\n" % str1)
+                f.write("  <th>%s</th>\n" % str3)
+                f.write("  <th>%s</th>\n" % str4)
+                f.write(" </tr>\n")
+            else:
+                f.write(" <tr>\n")
+                f.write("  <th colspan='2'>%s</th>\n" % str1)
+                f.write("  <td>%s</td>\n" % str3)
+                f.write("  <td>%s</td>\n" % str4)
+                f.write(" </tr>\n")
 
         elif not str1 and str2 and str3 and str4:
             f.write(" <tr>\n")
-            f.write("  <td rowspan='%s'>%s</td>\n" % (rowspan2, str2))
+            f.write("  <th rowspan='%s'>%s</th>\n" % (rowspan2, str2))
             f.write("  <td>%s</td>\n" % str3)
             f.write("  <td>%s</td>\n" % str4)
             f.write(" </tr>\n")
@@ -1280,7 +1385,7 @@ def main():
     # result = agent.compare_two_pdf("../Resources/2020Q1.pdf", "../Resources/2020Q2.pdf", "Monetary Policy Report")
     # agent.to_markdown("result.md")
     # markdown_to_html("result.md", "result.html")
-    agent.to_markdown_based_frame("result_frame.md")
+    agent.to_html_based_frame("result_frame.html")
 
 
 if __name__ == '__main__':
